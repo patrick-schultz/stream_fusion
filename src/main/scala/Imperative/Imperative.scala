@@ -18,6 +18,10 @@ trait Code {
 
   def add(x: Rep[Int], y: Rep[Int]): Rep[Int]
   def mul(x: Rep[Int], y: Rep[Int]): Rep[Int]
+
+  def equal[A](x: Rep[A], y: Rep[A]): Rep[Boolean]
+  def not(x: Rep[Boolean]): Rep[Boolean]
+  def and(x: Rep[Boolean], y: Rep[Boolean]): Rep[Boolean]
   def leq(x: Rep[Int], y: Rep[Int]): Rep[Boolean]
   def lt(x: Rep[Int], y: Rep[Int]): Rep[Boolean]
   def ifExpr[A](c: Rep[Boolean], cnsq: Rep[A], alt: Rep[A]): Rep[A]
@@ -26,9 +30,14 @@ trait Code {
   def arrayLen[A](a: Rep[IndexedSeq[A]]): Rep[Int]
   def arrayRef[A](a: Rep[IndexedSeq[A]], i: Rep[Int]): Rep[A]
 
+  def pair[A, B](a: Rep[A], b: Rep[B]): Rep[(A, B)]
+  def fst[A, B](p: Rep[(A, B)]): Rep[A]
+  def snd[A, B](p: Rep[(A, B)]): Rep[B]
+
   def none[A]: Rep[Option[A]]
   def some[A](e: Rep[A]): Rep[Option[A]]
-  def matchOpt[A, B](o: Rep[Option[A]], noneCase: Rep[B], someCase: Rep[A] => Rep[B]): Rep[B]
+  def matchOptExpr[A, B](o: Rep[Option[A]], noneCase: Rep[B], someCase: Rep[A] => Rep[B]): Rep[B]
+  def matchOpt[A](o: Rep[Option[A]], noneCase: StmtList, someCase: Rep[A] => StmtList): StmtList
 
   def rget[A](r: Rep[Ref[A]]): Rep[A]
   def rset[A](r: Rep[Ref[A]], a: Rep[A]): StmtList
@@ -56,6 +65,10 @@ object CodeI extends Code {
 
   def add(x: Rep[Int], y: Rep[Int]): Rep[Int] = () => x() + y()
   def mul(x: Rep[Int], y: Rep[Int]): Rep[Int] =  () => x() * y()
+
+  def equal[A](x: Rep[A], y: Rep[A]): Rep[Boolean] = () => x() == y()
+  def not(x: Rep[Boolean]): Rep[Boolean] = () => !x()
+  def and(x: Rep[Boolean], y: Rep[Boolean]): Rep[Boolean] = () => x() && y()
   def leq(x: Rep[Int], y: Rep[Int]): Rep[Boolean] =  () => x() <= y()
   def lt(x: Rep[Int], y: Rep[Int]): Rep[Boolean] =  () => x() < y()
   def ifExpr[A](c: Rep[Boolean], cnsq: Rep[A], alt: Rep[A]): Rep[A] =
@@ -65,9 +78,18 @@ object CodeI extends Code {
   def arrayLen[A](a: Rep[IndexedSeq[A]]): Rep[Int] = () => a().length
   def arrayRef[A](a: Rep[IndexedSeq[A]], i: Rep[Int]): Rep[A] = () => a()(i())
 
+  def pair[A, B](a: Rep[A], b: Rep[B]): Rep[(A, B)] = () => (a(), b())
+  def fst[A, B](p: Rep[(A, B)]): Rep[A] = () => p()._1
+  def snd[A, B](p: Rep[(A, B)]): Rep[B] = () => p()._2
+
   def none[A]: Rep[Option[A]] = () => None
   def some[A](e: Rep[A]): Rep[Option[A]] = () => Some(e())
-  def matchOpt[A, B](o: Rep[Option[A]], noneCase: Rep[B], someCase: Rep[A] => Rep[B]): Rep[B] =
+  def matchOptExpr[A, B](o: Rep[Option[A]], noneCase: Rep[B], someCase: Rep[A] => Rep[B]): Rep[B] =
+    () => o() match {
+      case None => noneCase()
+      case Some(x) => someCase(() => x)()
+    }
+  def matchOpt[A](o: Rep[Option[A]], noneCase: StmtList, someCase: Rep[A] => StmtList): StmtList =
     () => o() match {
       case None => noneCase()
       case Some(x) => someCase(() => x)()
@@ -75,7 +97,7 @@ object CodeI extends Code {
 
   def rget[A](r: Rep[Ref[A]]): Rep[A] = () => !r()
   def rset[A](r: Rep[Ref[A]], a: Rep[A]): StmtList = () => r() := a()
-  def fail[A]: Rep[A] = ???
+  def fail[A]: Rep[A] = () => ???
 
   implicit def toStmt[A](e: Rep[A]): StmtList = () => {e();}
   def seqExpr[A](s: StmtList, ss: Rep[A]): Rep[A] = () => {s(); ss()}
@@ -143,12 +165,16 @@ object CodeString extends Code {
 
   def add(x: Rep[Int], y: Rep[Int]): Rep[Int] = s"($x + $y)"
   def mul(x: Rep[Int], y: Rep[Int]): Rep[Int] = s"($x * $y)"
+
+  def equal[A](x: Rep[A], y: Rep[A]): Rep[Boolean] = s"$x == $y"
+  def not(x: Rep[Boolean]): Rep[Boolean] = s"!($x)"
+  def and(x: Rep[Boolean], y: Rep[Boolean]): Rep[Boolean] = s"($x && $y)"
   def leq(x: Rep[Int], y: Rep[Int]): Rep[Boolean] = s"($x <= $y)"
   def lt(x: Rep[Int], y: Rep[Int]): Rep[Boolean] = s"($x < $y)"
   def ifExpr[A](c: Rep[Boolean], cnsq: Rep[A], alt: Rep[A]): Rep[A] =
     s"($c) ? ($cnsq) : ($alt)"
 
-  def rget[A](r: Rep[Ref[A]]): Rep[A] = s"!($r)"
+  def rget[A](r: Rep[Ref[A]]): Rep[A] = s"($r)"
   def rset[A](r: Rep[Ref[A]], a: Rep[A]): StmtList = s"($r) := ($a);"
   def fail[A]: Rep[A] = "fail"
 
@@ -156,11 +182,19 @@ object CodeString extends Code {
   def arrayLen[A](a: Rep[IndexedSeq[A]]): Rep[Int] = s"($a).length"
   def arrayRef[A](a: Rep[IndexedSeq[A]], i: Rep[Int]): Rep[A] = s"($a)[$i]"
 
+  def pair[A, B](a: Rep[A], b: Rep[B]): Rep[(A, B)] = s"($a, $b)"
+  def fst[A, B](p: Rep[(A, B)]): Rep[A] = s"$p._1"
+  def snd[A, B](p: Rep[(A, B)]): Rep[B] = s"$p._2"
+
   def none[A]: Rep[Option[A]] = "None"
   def some[A](e: Rep[A]): Rep[Option[A]] = s"Some($e)"
-  def matchOpt[A, B](o: Rep[Option[A]], noneCase: Rep[B], someCase: Rep[A] => Rep[B]): Rep[B] = {
+  def matchOptExpr[A, B](o: Rep[Option[A]], noneCase: Rep[B], someCase: Rep[A] => Rep[B]): Rep[B] = {
     val x = fresh
-    s"(o) match { case None => $noneCase case Some($x) => someCase($x) }"
+    s"($o) match { case None => $noneCase case Some($x) => ${ someCase(x) } }"
+  }
+  def matchOpt[A](o: Rep[Option[A]], noneCase: StmtList, someCase: Rep[A] => StmtList): StmtList = {
+    val x = fresh
+    s"($o) match { case None => $noneCase case Some($x) => ${ someCase(x) } }"
   }
 
   def while_(c: Rep[Boolean], body: StmtList): StmtList = s"while ($c) {\n$body\n}"

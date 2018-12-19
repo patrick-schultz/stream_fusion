@@ -13,7 +13,7 @@ trait BasicStream { self =>
 
   // Producers
   def ofArray[A](a: Rep[IndexedSeq[A]]): Stream[A]
-//  def unfold[A, S](f: Rep[S] => Rep[Option[(A, S)]], s: Rep[S]): Stream[A]
+  def unfold[A, S](f: Rep[S] => Rep[Option[(A, S)]], s: Rep[S]): Stream[A]
 
   // Consumers
   def fold[A, S](f: (Rep[S], Rep[A]) => Rep[S], s: Rep[S]): Stream[A] => Rep[S]
@@ -183,12 +183,12 @@ object BasicStagedStreamInterpreter extends BasicStagedStream with BasicStreamCi
   }
 }
 
-trait BasicStreamCode extends BasicStream {
+trait StreamCode extends BasicStream {
   val code: Imperative.Code
   type Rep[A] = code.Rep[A]
 }
 
-trait BasicStagedStreamCode extends BasicStreamCode with BasicStagedStream {
+trait BasicStagedStreamCode extends StreamCode with BasicStagedStream {
   import Imperative.Ref
   type StmtList = code.StmtList
   import code._
@@ -206,32 +206,53 @@ trait BasicStagedStreamCode extends BasicStreamCode with BasicStagedStream {
     def hasNext(s: S): Rep[Boolean] = lt(rget(s.i), s.n)
   }
 
-//  def unfold[A, St](f: Rep[St] => Rep[Option[(A, St)]], z: Rep[St]): Stream[A] = new StStream[Rep[A]] {
-//    type S = Rep[Ref[Option[(A, St)]]]
-//    def init(k: S => StmtList): StmtList = k(let_mut[Option[(A, St)], Ref[Option[(A, St)]]](f(z), (s: S) => s))
-//    def step(s: S, k: Rep[A] => StmtList): StmtList =
-//      matchOpt(rget(s),
-//        fail,
-//        p => seq(rset(s, f())))
-//    def hasNext(s: S): Rep[Boolean] = ???
+  def unfold[A, St](f: Rep[St] => Rep[Option[(A, St)]], z: Rep[St]): Stream[A] = new StStream[Rep[A]] {
+    type S = Rep[Ref[Option[(A, St)]]]
+    def init(k: S => StmtList): StmtList =
+      letMut[Option[(A, St)]](f(z), (s: S) => k(s))
+    def step(s: Rep[Ref[Option[(A, St)]]], k: Rep[A] => StmtList): StmtList =
+      matchOpt[(A, St)](rget(s),
+        fail[(A, St)],
+        p => seq(rset(s, f(snd(p))), k(fst(p))))
+    def hasNext(s: Rep[Ref[Option[(A, St)]]]): Rep[Boolean] = not(equal(rget(s), none[(A, St)]))
+  }
+
+//  def fold[A, T](f: (Rep[T], Rep[A]) => Rep[T], z: Rep[T]): Stream[A] => Rep[T] = producer => {
+//    letMutExpr(z, (acc: Rep[Ref[T]]) =>
+//    seqExpr(
+//    producer.init(s =>
+//    while_(producer.hasNext(s),
+//      producer.step(s, a =>
+//      rset(acc, f(rget(acc), a))))),
+//    rget(acc)))
 //  }
+
+  def foldRaw[A](consumer: A => StmtList): StStream[A] => StmtList = producer =>
+    producer.init { s => while_(producer.hasNext(s), producer.step(s, consumer)) }
 
   def fold[A, T](f: (Rep[T], Rep[A]) => Rep[T], z: Rep[T]): Stream[A] => Rep[T] = producer => {
     letMutExpr(z, (acc: Rep[Ref[T]]) =>
-    seqExpr(
-    producer.init(s =>
-    while_(producer.hasNext(s),
-      producer.step(s, a =>
-      rset(acc, f(rget(acc), a))))),
-    rget(acc)))
+    seqExpr(foldRaw((a: Rep[A]) => rset(acc, f(rget(acc), a)))(producer), rget(acc)))
   }
 
-  def map[A, B](f: Rep[A] => Rep[B]): Stream[A] => Stream[B] = producer => new StStream[Rep[B]] {
-    type S = producer.S
-    def init(k: S => StmtList): StmtList = producer.init(k)
-    def step(s: S, k: Rep[B] => StmtList): StmtList = producer.step(s, el => k(f(el)))
-    def hasNext(s: S): Rep[Boolean] = producer.hasNext(s)
-  }
+  //  def map[A, B](f: Rep[A] => Rep[B]): Stream[A] => Stream[B] = producer => new StStream[Rep[B]] {
+  //    type S = producer.S
+  //    def init(k: S => StmtList): StmtList = producer.init(k)
+  //    def step(s: S, k: Rep[B] => StmtList): StmtList = producer.step(s, el => k(f(el)))
+  //    def hasNext(s: S): Rep[Boolean] = producer.hasNext(s)
+  //  }
+
+  def mapRaw[A, B](f: A => (B => StmtList) => StmtList): StStream[A] => StStream[B] =
+    producer => new StStream[B] {
+      type S = producer.S
+      def init(k: S => StmtList): StmtList = producer.init(k)
+      def step(s: S, k: B => StmtList): StmtList = producer.step(s, el => f(el)(k))
+      def hasNext(s: S): Rep[Boolean] = producer.hasNext(s)
+    }
+
+  def map[A, B](f: Rep[A] => Rep[B]): Stream[A] => Stream[B] =
+    mapRaw((a: Rep[A]) => (k: Rep[B] => StmtList) =>
+  let(f(a), b => k(b)))
 }
 
 object BasicStagedStreamCodeString extends BasicStagedStreamCode {
@@ -249,13 +270,6 @@ object Examples {
       .fold(0) { (x: Int, y: Int) => x + y }
   }
 
-//  def ex1b(semantics: BasicStreamCircular): Int = {
-//    import semantics._
-//    unfold[Int, Int](i => if (i < 5) Some((i, i+1)) else None, 0)
-//      .map { a => a * a }
-//      .fold(0) { (x: Int, y: Int) => x + y }
-//  }
-
   def ex1string(semantics: BasicStreamString): String = {
     import semantics._
     ofArray[Int]("Array.range(0, 5)")
@@ -263,7 +277,7 @@ object Examples {
       .fold("0") { (x: Rep[Int], y: Rep[Int]) => s"($x + $y)" }
   }
 
-  def ex1code(semantics: BasicStreamCode): semantics.Rep[Int] = {
+  def ex1code(semantics: StreamCode): semantics.Rep[Int] = {
     import semantics._
     import semantics.code._
     import semantics.code.Rep
@@ -271,22 +285,66 @@ object Examples {
       .map { a => mul(a, a) }
       .fold(int(0)) { (x: Rep[Int], y: Rep[Int]) => add(x, y) }
   }
+
+  def ex1b(semantics: BasicStreamCircular): Int = {
+    import semantics._
+    unfold[Int, Int](i => if (i < 5) Some((i, i+1)) else None, 0)
+      .map { a => a * a }
+      .fold(0) { (x: Int, y: Int) => x + y }
+  }
+
+  def ex1bCode(semantics: StreamCode): semantics.Rep[Int] = {
+    import semantics._
+    import semantics.code._
+    import semantics.code.Rep
+    unfold[Int, Int](i => ifExpr(lt(i, int(5)), some(pair(i, add(i, int(1)))), none), int(0))
+      .map { a => mul(a, a) }
+      .fold(int(0)) { (x, y) => add(x, y)}
+  }
+
+  def ex2Code(semantics: StagedStreamCode): semantics.Rep[Int] = {
+    import semantics._
+    import semantics.code._
+    import semantics.code.Rep
+    val p1 = ofArray[Int](array(Range(0, 5).map(i => int(i))))
+    val p2 = unfold[Int, Int](i => some(pair(i, add(i, int(1)))), int(0))
+    zipWith[Int, Int, Int]((x, y) => add(x, y))(p1, p2)
+      .map { a => add(a, int(1)) }
+      .fold(int(0)) { (x, y) => add(x, y)}
+  }
 }
 
 object BasicStream {
   def main(args: Array[String]): Unit = {
+    println("ex1")
     println(Examples.ex1(BasicStreamInterpreter))
     println(Examples.ex1(BasicPullStreamInterpreter))
     println(Examples.ex1(BasicStagedStreamInterpreter))
 
-//    println(Examples.ex1b(BasicPullStreamInterpreter))
-//    println(Examples.ex1b(BasicPullStreamInterpreter2))
-//    println(Examples.ex1b(BasicStagedStreamInterpreter))
+    println()
 
-    println()
-    println(Examples.ex1code(BasicStagedStreamCodeString))
-    println()
     val interpret = new BasicStagedStreamCode { val code = Imperative.CodeI }
     println(Examples.ex1code(interpret)())
+    println()
+    println(Examples.ex1code(BasicStagedStreamCodeString))
+
+    println()
+
+    println("ex1b")
+    println(Examples.ex1b(BasicStreamInterpreter))
+    println(Examples.ex1b(BasicPullStreamInterpreter))
+    println(Examples.ex1b(BasicStagedStreamInterpreter))
+
+    println()
+
+    println(Examples.ex1bCode(interpret)())
+    println()
+    println(Examples.ex1bCode(BasicStagedStreamCodeString))
+
+    val interpret2 = new StagedStreamCode { val code = Imperative.CodeI }
+    println("ex2")
+    println(Examples.ex2Code(interpret2)())
+    println()
+    println(Examples.ex2Code(StagedStreamCodeString))
   }
 }
