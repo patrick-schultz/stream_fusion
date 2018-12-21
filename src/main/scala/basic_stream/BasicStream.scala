@@ -168,20 +168,20 @@ object BasicStream {
   def main(args: Array[String]): Unit = {
     println("ex1")
 
-    println(Examples.ex1(BasicStagedStreamI)())
+    println(BasicExamples.ex1(BasicStagedStreamI)())
     println()
-    println(Examples.ex1(BasicStagedStreamString))
+    println(BasicExamples.ex1(BasicStagedStreamString))
 
     println()
 
     println("ex1b")
-    println(Examples.ex1b(BasicStagedStreamI)())
+    println(BasicExamples.ex1b(BasicStagedStreamI)())
     println()
-    println(Examples.ex1b(BasicStagedStreamString))
+    println(BasicExamples.ex1b(BasicStagedStreamString))
 
     println("ex2")
-    println(Examples.ex2(BasicStagedStreamI)())
+    println(BasicExamples.ex2(BasicStagedStreamI)())
     println()
-    println(Examples.ex2(BasicStagedStreamString))
+    println(BasicExamples.ex2(BasicStagedStreamString))
   }
 }

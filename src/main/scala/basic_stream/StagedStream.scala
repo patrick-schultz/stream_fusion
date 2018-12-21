@@ -51,11 +51,10 @@ abstract class StagedStreamSym { self =>
 }
 
 abstract class NestedStagedStreamCode extends StagedStreamSym { self =>
-  val B: BasicStagedStream {
-    type Rep[A] = self.Rep[A]
-    type StmtList = self.StmtList
-  }
-  val code: Code = B.code
+  val B: BasicStagedStream
+  val code: B.code.type = B.code
+  override type Rep[A] = B.code.Rep[A]
+  override type StmtList = B.code.StmtList
 
   trait Cardinality
   case object AtMost1 extends Cardinality
@@ -70,7 +69,9 @@ abstract class NestedStagedStreamCode extends StagedStreamSym { self =>
   import Imperative.Ref
   import code._
 
-  implicit class RichStagedStream[A](val st: StagedStream[A]) {
+  implicit class RichStagedStreamP[A](val st: StagedStream[A]) {
+    def foldRaw(consumer: A => StmtList): StmtList = self.foldRaw(consumer)(st)
+    def mapRaw[B](f: A => (B => StmtList) => StmtList): StagedStream[B] = self.mapRaw(f)(st)
     def moreTermination(cond: Rep[Boolean]): StagedStream[A] = self.moreTermination(cond)(st)
   }
 
