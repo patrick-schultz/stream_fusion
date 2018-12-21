@@ -6,39 +6,39 @@ import language.higherKinds
 abstract class BasicStagedStreamSym { self =>
   val code: Code
   type Rep[A] = code.Rep[A]
-  type LinStStream[_]
-  type LinStream[A] = LinStStream[Rep[A]]
+  type StagedStream[_]
+  type Stream[A] = StagedStream[Rep[A]]
   import code._
 
-  implicit class RichStream[A](val st: LinStream[A]) {
+  implicit class RichStream[A](val st: Stream[A]) {
     def fold[S](s: Rep[S])(f: (Rep[S], Rep[A]) => Rep[S]): Rep[S] = self.fold(f, s)(st)
-    def map[B](f: Rep[A] => Rep[B]): LinStream[B] = self.map(f)(st)
+    def map[B](f: Rep[A] => Rep[B]): Stream[B] = self.map(f)(st)
   }
 
-  implicit class RichStStream[A](val st: LinStStream[A]) {
+  implicit class RichStagedStream[A](val st: StagedStream[A]) {
     def foldRaw(consumer: A => StmtList): StmtList = self.foldRaw(consumer)(st)
-    def mapRaw[B](f: A => (B => StmtList) => StmtList): LinStStream[B] = self.mapRaw(f)(st)
+    def mapRaw[B](f: A => (B => StmtList) => StmtList): StagedStream[B] = self.mapRaw(f)(st)
   }
 
   // Producers
-  def LinOfArray[A](a: Rep[IndexedSeq[A]]): LinStream[A]
-  def LinUnfold[A, S](f: Rep[S] => Rep[Option[(A, S)]], s: Rep[S]): LinStream[A]
+  def ofArray[A](a: Rep[IndexedSeq[A]]): Stream[A]
+  def unfold[A, S](f: Rep[S] => Rep[Option[(A, S)]], s: Rep[S]): Stream[A]
 
   // Consumers
-  def foldRaw[A](consumer: A => StmtList): LinStStream[A] => StmtList
-  def fold[A, T](f: (Rep[T], Rep[A]) => Rep[T], z: Rep[T]): LinStream[A] => Rep[T] = producer => {
+  def foldRaw[A](consumer: A => StmtList): StagedStream[A] => StmtList
+  def fold[A, T](f: (Rep[T], Rep[A]) => Rep[T], z: Rep[T]): Stream[A] => Rep[T] = producer => {
     letMutExpr(z, (acc: Rep[Ref[T]]) =>
       seqExpr(foldRaw((a: Rep[A]) => rset(acc, f(rget(acc), a)))(producer), rget(acc)))
   }
 
   // Transformers
-  def mapRaw[A, B](f: A => (B => StmtList) => StmtList): LinStStream[A] => LinStStream[B]
-  def map[A, B](f: Rep[A] => Rep[B]): LinStream[A] => LinStream[B] =
+  def mapRaw[A, B](f: A => (B => StmtList) => StmtList): StagedStream[A] => StagedStream[B]
+  def map[A, B](f: Rep[A] => Rep[B]): Stream[A] => Stream[B] =
     mapRaw((a: Rep[A]) => (k: Rep[B] => StmtList) =>
       let(f(a), (b: Rep[B]) => k(b)))
 
-  def zipRaw[A, B](p1: LinStStream[A], p2: LinStStream[B]): LinStStream[(A, B)]
-  def zipWith[A, B, C](f: (Rep[A], Rep[B]) => Rep[C])(p1: LinStream[A], p2: LinStream[B]): LinStream[C] =
+  def zipRaw[A, B](p1: StagedStream[A], p2: StagedStream[B]): StagedStream[(A, B)]
+  def zipWith[A, B, C](f: (Rep[A], Rep[B]) => Rep[C])(p1: Stream[A], p2: Stream[B]): Stream[C] =
     mapRaw[(Rep[A], Rep[B]), Rep[C]](pair => k => k(f(pair._1, pair._2)))(zipRaw(p1, p2))
 }
 
@@ -46,14 +46,14 @@ abstract class BasicStagedStream extends BasicStagedStreamSym {
   type StmtList = code.StmtList
   import code._
 
-  abstract class LinStStream[A] {
+  abstract class StagedStream[A] {
     type S
     def init(k: S => StmtList): StmtList
     def step(s: S, k: A => StmtList): StmtList
     def hasNext(s: S): Rep[Boolean]
   }
 
-  def LinOfArray[A](a: Rep[IndexedSeq[A]]): LinStream[A] = new LinStStream[Rep[A]] {
+  def ofArray[A](a: Rep[IndexedSeq[A]]): Stream[A] = new StagedStream[Rep[A]] {
     case class S(i: Rep[Ref[Int]], n: Rep[Int], a: Rep[IndexedSeq[A]])
     def init(k: S => StmtList): StmtList =
       let(a, (a: Rep[IndexedSeq[A]]) =>
@@ -67,7 +67,7 @@ abstract class BasicStagedStream extends BasicStagedStreamSym {
     def hasNext(s: S): Rep[Boolean] = lt(rget(s.i), s.n)
   }
 
-  def LinUnfold[A, St](f: Rep[St] => Rep[Option[(A, St)]], z: Rep[St]): LinStream[A] = new LinStStream[Rep[A]] {
+  def unfold[A, St](f: Rep[St] => Rep[Option[(A, St)]], z: Rep[St]): Stream[A] = new StagedStream[Rep[A]] {
     type S = Rep[Ref[Option[(A, St)]]]
     def init(k: S => StmtList): StmtList =
       letMut[Option[(A, St)]](f(z), (s: S) => k(s))
@@ -88,7 +88,7 @@ abstract class BasicStagedStream extends BasicStagedStreamSym {
 //    rget(acc)))
 //  }
 
-  def foldRaw[A](consumer: A => StmtList): LinStStream[A] => StmtList = producer =>
+  def foldRaw[A](consumer: A => StmtList): StagedStream[A] => StmtList = producer =>
     producer.init { s => while_(producer.hasNext(s), producer.step(s, consumer)) }
 
 
@@ -99,15 +99,15 @@ abstract class BasicStagedStream extends BasicStagedStreamSym {
   //    def hasNext(s: S): Rep[Boolean] = producer.hasNext(s)
   //  }
 
-  def mapRaw[A, B](f: A => (B => StmtList) => StmtList): LinStStream[A] => LinStStream[B] =
-    producer => new LinStStream[B] {
+  def mapRaw[A, B](f: A => (B => StmtList) => StmtList): StagedStream[A] => StagedStream[B] =
+    producer => new StagedStream[B] {
       type S = producer.S
       def init(k: S => StmtList): StmtList = producer.init(k)
       def step(s: S, k: B => StmtList): StmtList = producer.step(s, el => f(el)(k))
       def hasNext(s: S): Rep[Boolean] = producer.hasNext(s)
     }
 
-  def zipRaw[A, B](p1: LinStStream[A], p2: LinStStream[B]): LinStStream[(A, B)] = new LinStStream[(A, B)] {
+  def zipRaw[A, B](p1: StagedStream[A], p2: StagedStream[B]): StagedStream[(A, B)] = new StagedStream[(A, B)] {
     type S = (p1.S, p2.S)
     def init(k: S => StmtList): StmtList =
       p1.init { s1 => p2.init { s2 => k(s1, s2) } }
@@ -119,8 +119,8 @@ abstract class BasicStagedStream extends BasicStagedStreamSym {
     }
   }
 
-  def moreTermination[A](cond: Rep[Boolean]): LinStStream[A] => LinStStream[A] =
-    producer => new LinStStream[A] {
+  def moreTermination[A](cond: Rep[Boolean]): StagedStream[A] => StagedStream[A] =
+    producer => new StagedStream[A] {
       type S = producer.S
       def init(k: S => StmtList): StmtList = producer.init(k)
       def step(s: S, k: A => StmtList): StmtList = producer.step(s, k)
@@ -140,7 +140,7 @@ object BasicExamples {
     import semantics._
     import code._
     import code.Rep
-    LinOfArray[Int](array(Range(0, 5).map(i => int(i))))
+    ofArray[Int](array(Range(0, 5).map(i => int(i))))
       .map { a => mul(a, a) }
       .fold(int(0)) { (x: Rep[Int], y: Rep[Int]) => add(x, y) }
   }
@@ -148,7 +148,7 @@ object BasicExamples {
   def ex1b(semantics: BasicStagedStreamSym): semantics.Rep[Int] = {
     import semantics._
     import code._
-    LinUnfold[Int, Int](i => ifExpr(lt(i, int(5)), some(pair(i, add(i, int(1)))), none), int(0))
+    unfold[Int, Int](i => ifExpr(lt(i, int(5)), some(pair(i, add(i, int(1)))), none), int(0))
       .map { a => mul(a, a) }
       .fold(int(0)) { (x, y) => add(x, y)}
   }
@@ -156,8 +156,8 @@ object BasicExamples {
   def ex2(semantics: BasicStagedStreamSym): semantics.Rep[Int] = {
     import semantics._
     import code._
-    val p1 = LinOfArray[Int](array(Range(0, 5).map(i => int(i))))
-    val p2 = LinUnfold[Int, Int](i => some(pair(i, add(i, int(1)))), int(0))
+    val p1 = ofArray[Int](array(Range(0, 5).map(i => int(i))))
+    val p2 = unfold[Int, Int](i => some(pair(i, add(i, int(1)))), int(0))
     zipWith[Int, Int, Int]((x, y) => add(x, y))(p1, p2)
       .map { a => add(a, int(1)) }
       .fold(int(0)) { (x, y) => add(x, y)}

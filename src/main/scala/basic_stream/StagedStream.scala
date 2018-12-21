@@ -2,67 +2,25 @@ package basic_stream
 import Imperative.Code
 import language.higherKinds
 
-abstract class StagedStreamSym { self =>
-  type StagedStream[_]
-
-  val code: Code
-  type Rep[A] = code.Rep[A]
-  type Stream[A] = StagedStream[Rep[A]]
-  type StmtList = code.StmtList
-  import Imperative.Ref
-  import code._
-
-  implicit class RichStagedStream[A](val st: StagedStream[A]) {
-    def foldRaw(consumer: A => StmtList): StmtList = self.foldRaw(consumer)(st)
-    def mapRaw[B](f: A => (B => StmtList) => StmtList): StagedStream[B] = self.mapRaw(f)(st)
-  }
-
-  implicit class RichStream[A](val st: Stream[A]) {
-    def fold[S](s: Rep[S])(f: (Rep[S], Rep[A]) => Rep[S]): Rep[S] = self.fold(f, s)(st)
-    def map[B](f: Rep[A] => Rep[B]): Stream[B] = self.map(f)(st)
-  }
-
-  def ofArray[A](a: Rep[IndexedSeq[A]]): Stream[A]
-  def unfold[A, S](f: Rep[S] => Rep[Option[(A, S)]], s: Rep[S]): Stream[A]
-
-  def foldRaw[A](consumer: A => StmtList): StagedStream[A] => StmtList
-
-  def fold[A, T](f: (Rep[T], Rep[A]) => Rep[T], z: Rep[T]): Stream[A] => Rep[T] = producer => {
-    letMutExpr(z, (acc: Rep[Ref[T]]) =>
-      seqExpr(foldRaw((a: Rep[A]) => rset(acc, f(rget(acc), a)))(producer), rget(acc)))
-  }
-
-  def mapRaw[A, B](f: A => (B => StmtList) => StmtList): StagedStream[A] => StagedStream[B]
-
-  def map[A, B](f: Rep[A] => Rep[B]): Stream[A] => Stream[B] =
-    mapRaw((a: Rep[A]) => (k: Rep[B] => StmtList) =>
-      let(f(a), (b: Rep[B]) => k(b)))
-
+abstract class StagedStreamSym extends BasicStagedStreamSym { self =>
   def flatMapRaw[A, B](f: A => StagedStream[B]): StagedStream[A] => StagedStream[B]
 
   def flatMap[A, B](f: Rep[A] => Stream[B]): Stream[A] => Stream[B] = flatMapRaw(f)
 
   def filter[A](f: Rep[A] => Rep[Boolean]): Stream[A] => Stream[A]
-
-  def zipRaw[A, B](stream1: StagedStream[A], stream2: StagedStream[B]): StagedStream[(A, B)]
-
-  def zipWith[A, B, C](f: (Rep[A], Rep[B]) => Rep[C])(p1: Stream[A], p2: Stream[B]): Stream[C] =
-    mapRaw[(Rep[A], Rep[B]), Rep[C]](pair => k => k(f(pair._1, pair._2)))(zipRaw(p1, p2))
 }
 
 abstract class NestedStagedStreamCode extends StagedStreamSym { self =>
   val B: BasicStagedStream
   val code: B.code.type = B.code
-  override type Rep[A] = B.code.Rep[A]
-  override type StmtList = B.code.StmtList
 
   trait Cardinality
   case object AtMost1 extends Cardinality
   case object Many extends Cardinality
 
   trait StagedStream[A]
-  case class Linear[A](producer: B.LinStStream[A], card: Cardinality) extends StagedStream[A]
-  case class Nested[A, B](producer: B.LinStStream[A], nestedf: A => StagedStream[B]) extends StagedStream[B]
+  case class Linear[A](producer: B.StagedStream[A], card: Cardinality) extends StagedStream[A]
+  case class Nested[A, B](producer: B.StagedStream[A], nestedf: A => StagedStream[B]) extends StagedStream[B]
 
   type Id[A] = A
 
@@ -76,10 +34,10 @@ abstract class NestedStagedStreamCode extends StagedStreamSym { self =>
   }
 
   def ofArray[A](a: Rep[IndexedSeq[A]]): StagedStream[Rep[A]] =
-    Linear(B.LinOfArray(a), Many)
+    Linear(B.ofArray(a), Many)
 
   def unfold[A, S](f: Rep[S] => Rep[Option[(A, S)]], s: Rep[S]): StagedStream[Rep[A]] =
-    Linear(B.LinUnfold(f, s), Many)
+    Linear(B.unfold(f, s), Many)
 
   def foldRaw[A](consumer: A => StmtList): StagedStream[A] => StmtList = {
     case Linear(producer, card) => card match {
@@ -102,7 +60,7 @@ abstract class NestedStagedStreamCode extends StagedStreamSym { self =>
   }
 
   def subSingleton[A](a: Rep[A], f: Rep[A] => Rep[Boolean]): Stream[A] = {
-    val st = new B.LinStStream[Rep[A]] {
+    val st = new B.StagedStream[Rep[A]] {
       type S = Rep[A]
       def init(k: S => StmtList): StmtList = k(a)
       def step(s: S, k: Rep[A] => StmtList): StmtList = k(s)
@@ -124,8 +82,8 @@ abstract class NestedStagedStreamCode extends StagedStreamSym { self =>
   }
 
   def pushLinear[A, B, C](
-    producer: B.LinStStream[A],
-    nestedProducer: B.LinStStream[B],
+    producer: B.StagedStream[A],
+    nestedProducer: B.StagedStream[B],
     nestedf: B => StagedStream[C]
   ): StagedStream[(A, C)] = {
     // 'newProducer' will replace 'nestedProducer', while also initializing
@@ -134,7 +92,7 @@ abstract class NestedStagedStreamCode extends StagedStreamSym { self =>
     // has a new 'C' value, and making the flag mutable allows the top level to
     // communicate the termination condition of 'producer' to lower levels.
     type B2 = (Rep[Ref[Boolean]], producer.S, B)
-    val newProducer = new B.LinStStream[B2] {
+    val newProducer = new B.StagedStream[B2] {
         type S = (Rep[Ref[Boolean]], producer.S, nestedProducer.S)
         val card = Many
         def init(k: S => StmtList): StmtList =
